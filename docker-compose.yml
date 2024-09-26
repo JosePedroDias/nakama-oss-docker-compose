@@ -1,0 +1,73 @@
+services:
+  reverse-proxy:
+    image: traefik:v3.1
+    command:
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.http.tls=true"
+      - "--entryPoints.websecure.forwardedHeaders.insecure=true"
+      - "--certificatesresolvers.le.acme.httpchallenge=true"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.le.acme.email=jose.pedro.dias@gmail.com"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - letsencrypt:/letsencrypt
+  postgres:
+    container_name: postgres
+    image: postgres:15.7-alpine
+    env_file: ".env"
+    environment:
+      POSTGRES_DB: nakama
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+    volumes:
+      - data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "nakama"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+  gamesvc:
+    image: registry.heroiclabs.com/heroiclabs/nakama:3.22.0
+    env_file: ".env"
+    entrypoint:
+      - "/bin/sh"
+      - "-ecx"
+      - >
+          /nakama/nakama migrate up --database.address postgres:$PG_PASSWORD@postgres:5432/nakama &&
+          exec /nakama/nakama --database.address postgres:$PG_PASSWORD@postgres:5432/nakama --console.username $NK_CONSOLE_USERNAME --console.password $NK_CONSOLE_PASSWORD --console.signing_key $NK_CONSOLE_SIGNING_KEY --runtime.http_key $NK_RUNTIME_HTTP_KEY --socket.server_key $NK_SOCKET_SERVER_KEY --session.encryption_key $NK_SESSION_ENCRYPTION_KEY --session.refresh_encryption_key $NK_SESSION_REFRESH_ENCRYPTION_KEY --name nakama1 --runtime.path "/nakama/data" --session.token_expiry_sec 7200 --logger.level DEBUG
+    restart: "no"
+    links:
+      - "postgres:db"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "7351:7351"
+    volumes:
+      - ./:/nakama/data
+    healthcheck:
+      test: ["CMD", "/nakama/nakama", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      - "traefik.http.middlewares.websocket-redirect-websocket.redirectscheme.scheme=https"
+      - "traefik.http.routers.gamesvc.entrypoints=websecure"
+      - "traefik.http.routers.gamesvc.tls=true"
+      - "traefik.http.services.gamesvc.loadbalancer.server.port=7350"
+      - "traefik.http.routers.gamesvc.tls.certresolver=le"
+      - "traefik.http.routers.gamesvc.rule=Host(`playrealm.net`)"
+volumes:
+  data:
+  letsencrypt:
